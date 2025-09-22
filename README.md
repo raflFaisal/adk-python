@@ -131,19 +131,19 @@ coordinator = LlmAgent(
   Deploying the Agent Locally with Docker Container:
 
 ```bash
-adk deploy docker <agent-folder> --with_ui
+adk deploy docker --with_ui <agent-folder>
 ```
 
   Deploying the Agent in Google Cloud (Cloud Run)
 
 ```bash
-adk deploy cloud_run <agent-folder> --with_ui
+adk deploy cloud_run --with_ui <agent-folder>
 ```
 
   You may set the following environment variables in adk command, or in a .env file instead.
 
 ```bash
-adk deploy cloud_run <agent-folder> --with_ui --env GOOGLE_GENAI_USE_VERTEXAI=1
+adk deploy cloud_run --with_ui --env GOOGLE_GENAI_USE_VERTEXAI=1 <agent-folder>
 ```
 
 ### Development UI
