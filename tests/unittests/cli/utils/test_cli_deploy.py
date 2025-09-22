@@ -35,6 +35,7 @@ import click
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
+from google.adk.cli.deployers.deployer_factory import DeployerFactory
 
 
 # Helpers
@@ -126,7 +127,8 @@ def mock_vertex_ai(
 # _resolve_project
 def test_resolve_project_with_option() -> None:
   """It should return the explicit project value untouched."""
-  assert cli_deploy._resolve_project("my-project") == "my-project"
+  cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
+  assert cloudRunDeployer._resolve_project("my-project") == "my-project"
 
 
 def test_resolve_project_from_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -138,7 +140,8 @@ def test_resolve_project_from_gcloud(monkeypatch: pytest.MonkeyPatch) -> None:
   )
 
   with mock.patch("click.echo") as mocked_echo:
-    assert cli_deploy._resolve_project(None) == "gcp-proj"
+    cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
+    assert cloudRunDeployer._resolve_project(None) == "gcp-proj"
     mocked_echo.assert_called_once()
 
 
@@ -151,8 +154,12 @@ def test_resolve_project_from_gcloud_fails(
       "run",
       mock.Mock(side_effect=subprocess.CalledProcessError(1, "cmd", "err")),
   )
-  with pytest.raises(subprocess.CalledProcessError):
-    cli_deploy._resolve_project(None)
+
+  cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
+  with pytest.raises(click.ClickException) as exc_info:
+      cloudRunDeployer._resolve_project(None)
+
+  assert "Failed to get project from gcloud" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
