@@ -30,11 +30,11 @@ import click
 from click.testing import CliRunner
 from google.adk.agents.base_agent import BaseAgent
 from google.adk.cli import cli_tools_click
+from google.adk.cli.deployers.cloud_run_deployer import CloudRunDeployer
 from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
-from google.adk.cli.deployers.cloud_run_deployer import CloudRunDeployer
 from pydantic import BaseModel
 import pytest
 
@@ -175,6 +175,7 @@ def test_cli_deploy_cloud_run_success(
   assert result.exit_code == 0
   assert rec.calls, "cli_deploy.run must be invoked"
 
+
 # cli deploy docker
 def test_cli_docker_cloud_run_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -196,6 +197,7 @@ def test_cli_docker_cloud_run_success(
   )
   assert result.exit_code == 0
   assert rec.calls, "cli_deploy.run must be invoked"
+
 
 def test_cli_deploy_cloud_run_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -659,9 +661,7 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
         kwargs.get("extra_gcloud_args"), adk_managed_args
     )
 
-  monkeypatch.setattr(
-      cli_tools_click.cli_deploy, "run", _mock_run
-  )
+  monkeypatch.setattr(cli_tools_click.cli_deploy, "run", _mock_run)
 
   agent_dir = tmp_path / "agent_conflict"
   agent_dir.mkdir()

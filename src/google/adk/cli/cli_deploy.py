@@ -62,6 +62,7 @@ def _resolve_project(project_in_option: Optional[str]) -> str:
   click.echo(f'Use default project: {project}')
   return project
 
+
 def _get_service_option_by_adk_version(
     adk_version: str,
     session_uri: Optional[str],

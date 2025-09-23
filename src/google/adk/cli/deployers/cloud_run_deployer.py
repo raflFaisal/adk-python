@@ -2,7 +2,8 @@
 
 import os
 import subprocess
-from typing import Optional, Tuple
+from typing import Optional
+from typing import Tuple
 
 import click
 
@@ -32,7 +33,7 @@ class CloudRunDeployer(Deployer):
     adk_managed_args = {'--source', '--project', '--port', '--verbosity'}
     if region:
       adk_managed_args.add('--region')
-      
+
     # Validate that extra gcloud args don't conflict with ADK-managed args
     self._validate_gcloud_extra_args(extra_gcloud_args, adk_managed_args)
 
@@ -64,7 +65,7 @@ class CloudRunDeployer(Deployer):
         '--verbosity',
         log_level.lower() if log_level else verbosity,
     ]
-  
+
     # Handle labels specially - merge user labels with ADK label
     user_labels = []
     extra_args_without_labels = []
@@ -122,8 +123,8 @@ class CloudRunDeployer(Deployer):
 
   def _validate_gcloud_extra_args(
       self,
-      extra_gcloud_args: Optional[tuple[str, ...]], 
-      adk_managed_args: set[str]
+      extra_gcloud_args: Optional[tuple[str, ...]],
+      adk_managed_args: set[str],
   ) -> None:
     """Validates that extra gcloud args don't conflict with ADK-managed args.
 
@@ -157,8 +158,8 @@ class CloudRunDeployer(Deployer):
       if len(conflicts) == 1:
         raise click.ClickException(
             f"The argument {conflict_list} conflicts with ADK's automatic"
-            ' configuration. ADK will set this argument automatically, so please'
-            ' remove it from your command.'
+            ' configuration. ADK will set this argument automatically, so'
+            ' please remove it from your command.'
         )
       else:
         raise click.ClickException(

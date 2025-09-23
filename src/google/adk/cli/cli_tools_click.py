@@ -231,6 +231,7 @@ def add_common_deploy_options(command):
     command = option(command)
   return command
 
+
 @main.group()
 def deploy():
   """Deploys agent to hosted environments."""
@@ -1289,6 +1290,7 @@ def cli_deploy_to_cloud_run(
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
 
+
 @deploy.command("docker", cls=HelpfulCommand)
 @add_common_deploy_options
 @adk_services_options()
@@ -1387,6 +1389,7 @@ def cli_deploy_docker(
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
+
 
 @deploy.command("agent_engine")
 @click.option(

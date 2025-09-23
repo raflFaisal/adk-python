@@ -32,10 +32,10 @@ from typing import Tuple
 from unittest import mock
 
 import click
+from google.adk.cli.deployers.deployer_factory import DeployerFactory
 import pytest
 
 import src.google.adk.cli.cli_deploy as cli_deploy
-from google.adk.cli.deployers.deployer_factory import DeployerFactory
 
 
 # Helpers
@@ -157,7 +157,7 @@ def test_resolve_project_from_gcloud_fails(
 
   cloudRunDeployer = DeployerFactory.get_deployer("cloud_run")
   with pytest.raises(click.ClickException) as exc_info:
-      cloudRunDeployer._resolve_project(None)
+    cloudRunDeployer._resolve_project(None)
 
   assert "Failed to get project from gcloud" in str(exc_info.value)
 
