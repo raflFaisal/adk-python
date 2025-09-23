@@ -34,6 +34,7 @@ from google.adk.evaluation.eval_case import EvalCase
 from google.adk.evaluation.eval_set import EvalSet
 from google.adk.evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
 from google.adk.evaluation.local_eval_sets_manager import LocalEvalSetsManager
+from google.adk.cli.deployers.cloud_run_deployer import CloudRunDeployer
 from pydantic import BaseModel
 import pytest
 
@@ -648,13 +649,13 @@ def test_cli_deploy_cloud_run_gcloud_arg_conflict(
 
   def _mock_run(*_a, **kwargs):
     # Import and call the validation function
-    from google.adk.cli.deployers.cloud_run_deployer import _validate_gcloud_extra_args
+    deployer = CloudRunDeployer()
 
     # Build the same set of managed args as the real function would
     adk_managed_args = {"--source", "--project", "--port", "--verbosity"}
     if kwargs.get("region"):
       adk_managed_args.add("--region")
-    _validate_gcloud_extra_args(
+    deployer._validate_gcloud_extra_args(
         kwargs.get("extra_gcloud_args"), adk_managed_args
     )
 
