@@ -1281,7 +1281,7 @@ def cli_deploy_to_cloud_run(
     if ctx.args:
       click.secho(
           f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]",
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
           " agent_path -- --min-instances=2",
           fg="red",
           err=True,
