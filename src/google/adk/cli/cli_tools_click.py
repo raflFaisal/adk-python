@@ -1281,7 +1281,7 @@ def cli_deploy_to_cloud_run(
     if ctx.args:
       click.secho(
           f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
+          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]",
           " agent_path -- --min-instances=2",
           fg="red",
           err=True,
@@ -1308,9 +1308,9 @@ def cli_deploy_to_cloud_run(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
-        extra_gcloud_args=tuple(gcloud_args),
         provider_args=provider_args,
         env=env,
+        extra_gcloud_args=tuple(gcloud_args),
     )
   except Exception as e:
     click.secho(f"Deploy failed: {e}", fg="red", err=True)
@@ -1359,35 +1359,6 @@ def cli_deploy_docker(
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
 
-  # Parse arguments to separate gcloud args (after --) from regular args
-  gcloud_args = []
-  if "--" in ctx.args:
-    separator_index = ctx.args.index("--")
-    gcloud_args = ctx.args[separator_index + 1 :]
-    regular_args = ctx.args[:separator_index]
-
-    # If there are regular args before --, that's an error
-    if regular_args:
-      click.secho(
-          "Error: Unexpected arguments after agent path and before '--':"
-          f" {' '.join(regular_args)}. \nOnly arguments after '--' are passed"
-          " to gcloud.",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
-  else:
-    # No -- separator, treat all args as an error to enforce the new behavior
-    if ctx.args:
-      click.secho(
-          f"Error: Unexpected arguments: {' '.join(ctx.args)}. \nUse '--' to"
-          " separate gcloud arguments, e.g.: adk deploy cloud_run [options]"
-          " agent_path -- --min-instances=2",
-          fg="red",
-          err=True,
-      )
-      ctx.exit(2)
-
   try:
     cli_deploy.run(
         agent_folder=agent,
@@ -1408,7 +1379,6 @@ def cli_deploy_docker(
         artifact_service_uri=artifact_service_uri,
         memory_service_uri=memory_service_uri,
         a2a=a2a,
-        extra_gcloud_args=tuple(gcloud_args),
         provider_args=provider_args,
         env=env,
     )

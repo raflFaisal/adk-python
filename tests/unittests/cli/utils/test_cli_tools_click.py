@@ -177,7 +177,7 @@ def test_cli_deploy_cloud_run_success(
 
 
 # cli deploy docker
-def test_cli_docker_cloud_run_success(
+def test_cli_deploy_docker_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
   """Successful path should call cli_deploy.run once."""

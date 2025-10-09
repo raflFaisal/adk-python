@@ -1,6 +1,6 @@
 from abc import ABC
 from abc import abstractmethod
-from typing import Dict
+from typing import Tuple
 
 
 class Deployer(ABC):
@@ -10,8 +10,8 @@ class Deployer(ABC):
       self,
       temp_folder: str,
       service_name: str,
-      provider_args: Dict[str, str],
-      env_vars: Dict[str, str],
+      provider_args: Tuple[str],  
+      env_vars: Tuple[str],
       **kwargs,
   ):
     """Deploys the agent to the target platform."""

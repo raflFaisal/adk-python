@@ -147,7 +147,7 @@ def run(
     artifact_service_uri: The URI of the artifact service.
     memory_service_uri: The URI of the memory service.
     provider_args: The arguments specific to cloud provider
-    env: The environment valriables provided
+    env: The environment variables provided
   """
   app_name = app_name or os.path.basename(agent_folder)
   mode = 'web' if with_ui else 'api_server'
