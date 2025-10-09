@@ -185,7 +185,7 @@ class CloudRunDeployer(Deployer):
     env_vars_str = ''
 
     if os.path.exists(env_file_path):
-      with open(env_file_path, 'r', encoding='utf-8') as f:  
+      with open(env_file_path, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
       env_vars = []

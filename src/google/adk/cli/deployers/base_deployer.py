@@ -10,7 +10,7 @@ class Deployer(ABC):
       self,
       temp_folder: str,
       service_name: str,
-      provider_args: Tuple[str],  
+      provider_args: Tuple[str],
       env_vars: Tuple[str],
       **kwargs,
   ):

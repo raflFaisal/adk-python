@@ -49,9 +49,9 @@ class DockerDeployer(Deployer):
         env_args.extend(['-e', f'{key}={value}'])
     return env_args
 
-  def get_env_file_arg(self, agent_folder: str) -> List[str]:  
-    """Returns Docker `--env-file` argument if .env file exists in agent_folder."""  
-    env_file_path = os.path.join(agent_folder, '.env')  
-    if os.path.exists(env_file_path):  
-      return ['--env-file', env_file_path]  
+  def get_env_file_arg(self, agent_folder: str) -> List[str]:
+    """Returns Docker `--env-file` argument if .env file exists in agent_folder."""
+    env_file_path = os.path.join(agent_folder, '.env')
+    if os.path.exists(env_file_path):
+      return ['--env-file', env_file_path]
     return []
