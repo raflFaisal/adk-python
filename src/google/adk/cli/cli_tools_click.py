@@ -116,7 +116,7 @@ def main():
   pass
 
 
-def add_common_deploy_options(command):
+def deploy_options(command):
   """Add common options to deploy subcommands."""
   options = [
       click.option(
@@ -134,6 +134,7 @@ def add_common_deploy_options(command):
           help=(
               "Optional. Environment variables as multiple --env key=value"
               " pairs."
+              " --env GOOGLE_GENAI_USE_VERTEXAI=1"
           ),
       ),
       click.option(
@@ -1383,7 +1384,7 @@ def cli_api_server(
         " gcloud run deploy will prompt later."
     ),
 )
-@add_common_deploy_options
+@deploy_options
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
 @adk_services_options()
 @deprecated_adk_services_options()
@@ -1494,9 +1495,8 @@ def cli_deploy_to_cloud_run(
 
 
 @deploy.command("docker", cls=HelpfulCommand)
-@add_common_deploy_options
+@deploy_options
 @adk_services_options()
-@deprecated_adk_services_options()
 @click.pass_context
 def cli_deploy_docker(
     ctx,
@@ -1509,7 +1509,6 @@ def cli_deploy_docker(
     with_ui: bool,
     adk_version: str,
     log_level: str,
-    verbosity: Optional[str],
     provider_args: Tuple[str],
     env: Tuple[str],
     allow_origins: Optional[list[str]] = None,
@@ -1525,13 +1524,6 @@ def cli_deploy_docker(
   Example:
       adk deploy docker path/to/my_agent
   """
-  if verbosity:
-    click.secho(
-        "WARNING: The --verbosity option is deprecated. Use --log_level"
-        " instead.",
-        fg="yellow",
-        err=True,
-    )
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
@@ -1550,7 +1542,7 @@ def cli_deploy_docker(
         allow_origins=allow_origins,
         with_ui=with_ui,
         log_level=log_level,
-        verbosity=verbosity,
+        verbosity=None,
         adk_version=adk_version,
         session_service_uri=session_service_uri,
         artifact_service_uri=artifact_service_uri,
