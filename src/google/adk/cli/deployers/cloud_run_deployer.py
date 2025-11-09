@@ -45,7 +45,7 @@ class CloudRunDeployer(Deployer):
     elif not env_vars_str:
       env_vars_str = env_file_str
 
-    env_vars_str = self.add_required_env_vars(env_vars_str, project, region)
+    env_vars_str = self.add_gcp_env_vars(env_vars_str, project, region)
 
     # Build the command with extra gcloud args
     gcloud_cmd = [
@@ -173,7 +173,7 @@ class CloudRunDeployer(Deployer):
     Returns a comma-separated string of 'KEY=value' entries
     from a tuple of environment variable strings.
     """
-    valid_pairs = [item for item in env_vars if '=' in item]
+    valid_pairs = [item.strip() for item in env_vars if '=' in item]
     return ','.join(valid_pairs)
 
   def build_env_file_arg(self, agent_folder: str) -> str:
@@ -199,13 +199,14 @@ class CloudRunDeployer(Deployer):
 
     return env_vars_str
 
-  def add_required_env_vars(
+  def add_gcp_env_vars(
       self, env_vars_str: str, project: str, region: str
   ) -> str:
     """
     Appends required Google-specific environment variables to the existing env var string.
     """
     extra_envs = [
+        f'GOOGLE_GENAI_USE_VERTEXAI=1',
         f'GOOGLE_CLOUD_PROJECT={project}',
         f'GOOGLE_CLOUD_LOCATION={region}',
     ]

@@ -197,11 +197,6 @@ def deploy_options(command):
           help="Optional. Set the logging level",
       ),
       click.option(
-          "--verbosity",
-          type=LOG_LEVELS,
-          help="Deprecated. Use --log_level instead.",
-      ),
-      click.option(
           "--adk_version",
           type=str,
           default=version.__version__,
@@ -1383,6 +1378,11 @@ def cli_api_server(
         "Required. Google Cloud region to deploy the agent. When absent,"
         " gcloud run deploy will prompt later."
     ),
+)
+@click.option(
+    "--verbosity",
+    type=LOG_LEVELS,
+    help="Deprecated. Use --log_level instead.",
 )
 @deploy_options
 # TODO: Add eval_storage_uri option back when evals are supported in Cloud Run.
