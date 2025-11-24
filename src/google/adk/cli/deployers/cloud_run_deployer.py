@@ -22,6 +22,8 @@ import click
 
 from ..deployers.base_deployer import Deployer
 
+_IS_WINDOWS = os.name == 'nt'
+_GCLOUD_CMD = 'gcloud.cmd' if _IS_WINDOWS else 'gcloud'
 
 class CloudRunDeployer(Deployer):
 
@@ -62,7 +64,7 @@ class CloudRunDeployer(Deployer):
 
     # Build the command with extra gcloud args
     gcloud_cmd = [
-        'gcloud',
+        _GCLOUD_CMD,
         'run',
         'deploy',
         service_name,
@@ -120,7 +122,7 @@ class CloudRunDeployer(Deployer):
 
     try:
       result = subprocess.run(
-          ['gcloud', 'config', 'get-value', 'project'],
+          [_GCLOUD_CMD, 'config', 'get-value', 'project'],
           check=True,
           capture_output=True,
           text=True,
