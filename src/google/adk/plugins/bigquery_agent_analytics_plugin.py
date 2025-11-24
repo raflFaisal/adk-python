@@ -23,7 +23,6 @@ from typing import Any
 from typing import Callable
 from typing import List
 from typing import Optional
-from typing import Set
 from typing import TYPE_CHECKING
 
 from google.api_core.gapic_v1 import client_info as gapic_client_info
@@ -173,10 +172,11 @@ def _bq_to_arrow_field(bq_field):
     metadata = _BQ_FIELD_TYPE_TO_ARROW_FIELD_METADATA.get(
         bq_field.field_type.upper() if bq_field.field_type else ""
     )
+    nullable = bq_field.mode.upper() != "REQUIRED"
     return pa.field(
         bq_field.name,
         arrow_type,
-        nullable=(bq_field.mode != "REPEATED"),
+        nullable=nullable,
         metadata=metadata,
     )
   logging.warning(
@@ -213,12 +213,18 @@ class BigQueryLoggerConfig:
     event_denylist: A list of event types to skip logging.
     content_formatter: An optional function to format event content before
       logging.
+    shutdown_timeout: Seconds to wait for logs to flush during shutdown.
+    client_close_timeout: Seconds to wait for BQ client to close.
+    max_content_length: The maximum length of content parts before truncation.
   """
 
   enabled: bool = True
   event_allowlist: Optional[List[str]] = None
   event_denylist: Optional[List[str]] = None
   content_formatter: Optional[Callable[[Any], str]] = None
+  shutdown_timeout: float = 5.0
+  client_close_timeout: float = 2.0
+  max_content_length: int = 500
 
 
 # --- Helper Formatters ---
@@ -239,10 +245,19 @@ def _get_event_type(event: Event) -> str:
 
 def _format_content(
     content: Optional[types.Content], max_len: int = 500
-) -> str:
-  """Formats an Event content for logging."""
+) -> tuple[str, bool]:
+  """Formats an Event content for logging.
+
+  Args:
+    content: The Event content to format.
+    max_len: The maximum length of the text parts before truncation.
+
+  Returns:
+    A tuple containing the formatted content string and a boolean indicating if
+    the content was truncated.
+  """
   if not content or not content.parts:
-    return "None"
+    return "None", False
   parts = []
   for p in content.parts:
     if p.text:
@@ -257,18 +272,33 @@ def _format_content(
       parts.append(f"resp: {p.function_response.name}")
     else:
       parts.append("other")
-  return " | ".join(parts)
+  return " | ".join(parts), any(
+      len(p.text) > max_len for p in content.parts if p.text
+  )
 
 
-def _format_args(args: dict[str, Any], max_len: int = 1000) -> str:
-  """Formats tool arguments or results for logging."""
+def _format_args(
+    args: dict[str, Any], *, max_len: int = 1000
+) -> tuple[str, bool]:
+  """Formats tool arguments or results for logging.
+
+  Args:
+    args: The tool arguments or results dictionary to format.
+    max_len: The maximum length of the output string before truncation.
+
+  Returns:
+    A tuple containing the JSON formatted string and a boolean indicating if
+    the content was truncated.
+  """
   if not args:
-    return "{}"
+    return "{}", False
   try:
     s = json.dumps(args)
   except TypeError:
     s = str(args)
-  return s[:max_len] + "..." if len(s) > max_len else s
+  if len(s) > max_len:
+    return s[:max_len] + "...", True
+  return s, False
 
 
 class BigQueryAgentAnalyticsPlugin(BasePlugin):
@@ -313,31 +343,102 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._write_client: BigQueryWriteAsyncClient | None = None
     self._init_lock: asyncio.Lock | None = None
     self._arrow_schema: pa.Schema | None = None
-    self._background_tasks: Set[asyncio.Task] = set()  # Track pending logs
+    self._background_tasks: set[asyncio.Task] = set()
+    self._is_shutting_down = False
     self._schema = [
-        bigquery.SchemaField("timestamp", "TIMESTAMP"),
-        bigquery.SchemaField("event_type", "STRING"),
-        bigquery.SchemaField("agent", "STRING"),
-        bigquery.SchemaField("session_id", "STRING"),
-        bigquery.SchemaField("invocation_id", "STRING"),
-        bigquery.SchemaField("user_id", "STRING"),
-        bigquery.SchemaField("content", "STRING"),
-        bigquery.SchemaField("error_message", "STRING"),
+        bigquery.SchemaField(
+            "timestamp",
+            "TIMESTAMP",
+            mode="REQUIRED",
+            description="The UTC time at which the event was logged.",
+        ),
+        bigquery.SchemaField(
+            "event_type",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "Indicates the type of event being logged (e.g., 'LLM_REQUEST',"
+                " 'TOOL_COMPLETED')."
+            ),
+        ),
+        bigquery.SchemaField(
+            "agent",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "The name of the ADK agent or author associated with the event."
+            ),
+        ),
+        bigquery.SchemaField(
+            "session_id",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "A unique identifier to group events within a single"
+                " conversation or user session."
+            ),
+        ),
+        bigquery.SchemaField(
+            "invocation_id",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "A unique identifier for each individual agent execution or"
+                " turn within a session."
+            ),
+        ),
+        bigquery.SchemaField(
+            "user_id",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "The identifier of the user associated with the current"
+                " session."
+            ),
+        ),
+        bigquery.SchemaField(
+            "content",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "The event-specific data (payload). Format varies by"
+                " event_type."
+            ),
+        ),
+        bigquery.SchemaField(
+            "error_message",
+            "STRING",
+            mode="NULLABLE",
+            description=(
+                "Populated if an error occurs during the processing of the"
+                " event."
+            ),
+        ),
+        bigquery.SchemaField(
+            "is_truncated",
+            "BOOLEAN",
+            mode="NULLABLE",
+            description=(
+                "Indicates if the content field was truncated due to size"
+                " limits."
+            ),
+        ),
     ]
 
   def _format_content_safely(
       self, content: Optional[types.Content]
-  ) -> str | None:
+  ) -> tuple[str | None, bool]:
     """Formats content using self._config.content_formatter or _format_content, catching errors."""
     if content is None:
-      return None
+      return None, False
     try:
       if self._config.content_formatter:
-        return self._config.content_formatter(content)
-      return _format_content(content)
+        # Custom formatter: we assume no truncation or we can't know.
+        return self._config.content_formatter(content), False
+      return _format_content(content, max_len=self._config.max_content_length)
     except Exception as e:
-      logging.warning(f"Content formatter failed: {e}")
-      return "[FORMATTING FAILED]"
+      logging.warning("Content formatter failed: %s", e)
+      return "[FORMATTING FAILED]", False
 
   async def _ensure_init(self):
     """Ensures BigQuery clients are initialized."""
@@ -363,14 +464,21 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         # Ensure table exists (sync call in thread)
         def create_resources():
           if self._bq_client:
-            dataset = self._bq_client.create_dataset(
-                self._dataset_id, exists_ok=True
-            )
+            self._bq_client.create_dataset(self._dataset_id, exists_ok=True)
             table = bigquery.Table(
                 f"{self._project_id}.{self._dataset_id}.{self._table_id}",
                 schema=self._schema,
             )
+            table.time_partitioning = bigquery.TimePartitioning(
+                type_="DAY", field="timestamp"
+            )
+            table.clustering_fields = ["event_type", "agent", "user_id"]
             self._bq_client.create_table(table, exists_ok=True)
+            logging.info(
+                "BQ Plugin: Dataset %s and Table %s ensured to exist.",
+                self._dataset_id,
+                self._table_id,
+            )
 
         await asyncio.to_thread(create_resources)
 
@@ -379,9 +487,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
             client_info=client_info,
         )
         self._arrow_schema = to_arrow_schema(self._schema)
+        if not self._arrow_schema:
+          raise RuntimeError("Failed to convert BigQuery schema to Arrow.")
+        logging.info("BQ Plugin: Initialized successfully.")
         return True
       except Exception as e:
-        logging.error(f"BQ Init Failed: {e}")
+        logging.error("BQ Plugin: Init Failed:", exc_info=True)
         return False
 
   async def _perform_write(self, row: dict):
@@ -412,14 +523,30 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
           self._write_client.append_rows(iter([req]))
       ):
         if resp.error.code != 0:
-          logging.error(f"BQ Write Error: {resp.error.message}")
+          msg = resp.error.message
+          # Check for common schema mismatch indicators
+          if (
+              "schema mismatch" in msg.lower()
+              or "field" in msg.lower()
+              or "type" in msg.lower()
+          ):
+            logging.error(
+                "BQ Plugin: Schema Mismatch Error. The BigQuery table schema"
+                " may be incorrect or out of sync with the plugin. Please"
+                " verify the table definition. Details: %s",
+                msg,
+            )
+          else:
+            logging.error("BQ Plugin: Write Error: %s", msg)
 
     except RuntimeError as e:
-      # Silently ignore event loop closed errors during background writes
-      if "Event loop is closed" not in str(e):
-        logging.exception(f"BQ Runtime Error: {e}")
+      if "Event loop is closed" not in str(e) and not self._is_shutting_down:
+        logging.error("BQ Plugin: Runtime Error during write:", exc_info=True)
+    except asyncio.CancelledError:
+      if not self._is_shutting_down:
+        logging.warning("BQ Plugin: Write task cancelled unexpectedly.")
     except Exception as e:
-      logging.error(f"BQ Write Failed: {e}")
+      logging.error("BQ Plugin: Write Failed:", exc_info=True)
 
   async def _log(self, data: dict):
     """Schedules a log entry to be written in the background."""
@@ -447,6 +574,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "user_id": None,
         "content": None,
         "error_message": None,
+        "is_truncated": False,
     }
     row.update(data)
 
@@ -455,34 +583,46 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
     self._background_tasks.add(task)
     task.add_done_callback(self._background_tasks.discard)
 
-  async def shutdown(self):
+  async def close(self):
     """Flushes pending logs and closes client."""
-    # 1. Wait for pending background logs (best effort, 2s timeout)
-    if self._background_tasks:
-      logging.info(f"Flushing {len(self._background_tasks)} pending BQ logs...")
-      done, pending = await asyncio.wait(self._background_tasks, timeout=2.0)
-      if pending:
-        logging.warning(
-            f"{len(pending)} BQ logs could not be flushed before shutdown."
-        )
+    if self._is_shutting_down:
+      return
+    self._is_shutting_down = True
+    logging.info("BQ Plugin: Shutdown started.")
 
-    # 2. Close client
-    if self._write_client and self._write_client.transport:
+    if self._background_tasks:
+      logging.info(
+          "BQ Plugin: Flushing %s pending logs...", len(self._background_tasks)
+      )
       try:
-        logging.info("Closing BQ Write client transport...")
+        await asyncio.wait(
+            self._background_tasks, timeout=self._config.shutdown_timeout
+        )
+      except asyncio.TimeoutError:
+        logging.warning("BQ Plugin: Timeout waiting for logs to flush.")
+      except Exception as e:
+        logging.warning("BQ Plugin: Error flushing logs:", exc_info=True)
+
+    # Use getattr for safe access in case transport is not present.
+    if self._write_client and getattr(self._write_client, "transport", None):
+      try:
+        logging.info("BQ Plugin: Closing write client.")
         await asyncio.wait_for(
-            self._write_client.transport.close(), timeout=1.0
+            self._write_client.transport.close(),
+            timeout=self._config.client_close_timeout,
         )
       except Exception as e:
-        logging.warning(f"Error during BQ Write client transport close: {e}")
-      self._write_client = None
+        logging.warning("BQ Plugin: Error closing write client: %s", e)
     if self._bq_client:
       try:
-        logging.info("Closing BQ client...")
         self._bq_client.close()
       except Exception as e:
-        logging.warning(f"Error during BQ client close: {e}")
-      self._bq_client = None
+        logging.warning("BQ Plugin: Error closing BQ client: %s", e)
+
+    self._write_client = None
+    self._bq_client = None
+    self._is_shutting_down = False
+    logging.info("BQ Plugin: Shutdown complete.")
 
   # --- Streamlined Callbacks ---
   async def on_user_message_callback(
@@ -491,20 +631,34 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       invocation_context: InvocationContext,
       user_message: types.Content,
   ) -> None:
-    """Callback for user messages."""
+    """Callback for user messages.
+
+    Logs the user message details including:
+    1. User content (text)
+
+    The content is formatted as 'User Content: {content}'.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
+    content, truncated = self._format_content_safely(user_message)
     await self._log({
         "event_type": "USER_MESSAGE_RECEIVED",
         "agent": invocation_context.agent.name,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": f"User Content: {self._format_content_safely(user_message)}",
+        "content": f"User Content: {content}",
+        "is_truncated": truncated,
     })
 
   async def before_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> None:
-    """Callback before agent invocation."""
+    """Callback before agent invocation.
+
+    Logs the start of an agent invocation.
+    No specific content payload is logged for this event, but standard metadata
+    (agent name, session ID, invocation ID, user ID) is captured.
+    """
     await self._log({
         "event_type": "INVOCATION_STARTING",
         "agent": invocation_context.agent.name,
@@ -516,28 +670,38 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def on_event_callback(
       self, *, invocation_context: InvocationContext, event: Event
   ) -> None:
-    """Callback for agent events."""
+    """Callback for agent events.
+
+    Logs generic agent events including:
+    1. Event type (determined from event properties)
+    2. Event content (text, function calls, or responses)
+    3. Error messages (if any)
+
+    The content is formatted based on the event type.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
+    content, truncated = self._format_content_safely(event.content)
     await self._log({
         "event_type": _get_event_type(event),
         "agent": event.author,
         "session_id": invocation_context.session.id,
         "invocation_id": invocation_context.invocation_id,
         "user_id": invocation_context.session.user_id,
-        "content": (
-            json.dumps(
-                [part.model_dump(mode="json") for part in event.content.parts]
-            )
-            if event.content and event.content.parts
-            else None
-        ),
+        "content": content,
         "error_message": event.error_message,
         "timestamp": datetime.fromtimestamp(event.timestamp, timezone.utc),
+        "is_truncated": truncated,
     })
 
   async def after_run_callback(
       self, *, invocation_context: InvocationContext
   ) -> None:
-    """Callback after agent invocation."""
+    """Callback after agent invocation.
+
+    Logs the completion of an agent invocation.
+    No specific content payload is logged for this event, but standard metadata
+    (agent name, session ID, invocation ID, user ID) is captured.
+    """
     await self._log({
         "event_type": "INVOCATION_COMPLETED",
         "agent": invocation_context.agent.name,
@@ -549,7 +713,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def before_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> None:
-    """Callback before an agent starts."""
+    """Callback before an agent starts.
+
+    Logs the start of a specific agent execution.
+    Content includes:
+    1. Agent Name (from callback context)
+    """
     await self._log({
         "event_type": "AGENT_STARTING",
         "agent": agent.name,
@@ -562,7 +731,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def after_agent_callback(
       self, *, agent: BaseAgent, callback_context: CallbackContext
   ) -> None:
-    """Callback after an agent completes."""
+    """Callback after an agent completes.
+
+    Logs the completion of a specific agent execution.
+    Content includes:
+    1. Agent Name (from callback context)
+    """
     await self._log({
         "event_type": "AGENT_COMPLETED",
         "agent": agent.name,
@@ -575,10 +749,63 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
   async def before_model_callback(
       self, *, callback_context: CallbackContext, llm_request: LlmRequest
   ) -> None:
-    """Callback before LLM call."""
+    """Callback before LLM call.
+
+    Logs the LLM request details including:
+    1. Model name
+    2. Configuration parameters (temperature, top_p, top_k, max_output_tokens)
+    3. Available tool names
+    4. Prompt content (user/model messages)
+    5. System instructions
+
+    The content is formatted as a single string with fields separated by ' | '.
+    If the total length exceeds `max_content_length`, the string is truncated,
+    prioritizing the metadata (Model, Params, Tools) over the Prompt and System
+    Prompt.
+    """
     content_parts = [
         f"Model: {llm_request.model or 'default'}",
     ]
+    is_truncated = False
+
+    # 1. Params
+    if llm_request.config:
+      config = llm_request.config
+      params_to_log = {}
+      if hasattr(config, "temperature") and config.temperature is not None:
+        params_to_log["temperature"] = config.temperature
+      if hasattr(config, "top_p") and config.top_p is not None:
+        params_to_log["top_p"] = config.top_p
+      if hasattr(config, "top_k") and config.top_k is not None:
+        params_to_log["top_k"] = config.top_k
+      if (
+          hasattr(config, "max_output_tokens")
+          and config.max_output_tokens is not None
+      ):
+        params_to_log["max_output_tokens"] = config.max_output_tokens
+
+      if params_to_log:
+        params_str = ", ".join([f"{k}={v}" for k, v in params_to_log.items()])
+        content_parts.append(f"Params: {{{params_str}}}")
+
+    # 2. Tools
+    if llm_request.tools_dict:
+      content_parts.append(
+          f"Available Tools: {list(llm_request.tools_dict.keys())}"
+      )
+
+    # 3. Prompt
+    if contents := getattr(llm_request, "contents", None):
+      prompt_parts = []
+      for c in contents:
+        c_str, c_trunc = self._format_content_safely(c)
+        prompt_parts.append(f"{c.role}: {c_str}")
+        if c_trunc:
+          is_truncated = True
+      prompt_str = " | ".join(prompt_parts)
+      content_parts.append(f"Prompt: {prompt_str}")
+
+    # 4. System Prompt
     system_instruction_text = "None"
     if llm_request.config and llm_request.config.system_instruction:
       si = llm_request.config.system_instruction
@@ -602,31 +829,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       system_instruction_text = "Empty"
 
     content_parts.append(f"System Prompt: {system_instruction_text}")
-    if llm_request.config:
-      config = llm_request.config
-      params_to_log = {}
-      if hasattr(config, "temperature") and config.temperature is not None:
-        params_to_log["temperature"] = config.temperature
-      if hasattr(config, "top_p") and config.top_p is not None:
-        params_to_log["top_p"] = config.top_p
-      if hasattr(config, "top_k") and config.top_k is not None:
-        params_to_log["top_k"] = config.top_k
-      if (
-          hasattr(config, "max_output_tokens")
-          and config.max_output_tokens is not None
-      ):
-        params_to_log["max_output_tokens"] = config.max_output_tokens
-
-      if params_to_log:
-        params_str = ", ".join([f"{k}={v}" for k, v in params_to_log.items()])
-        content_parts.append(f"Params: {{{params_str}}}")
-
-    if llm_request.tools_dict:
-      content_parts.append(
-          f"Available Tools: {list(llm_request.tools_dict.keys())}"
-      )
 
     final_content = " | ".join(content_parts)
+    max_len = self._config.max_content_length
+    if len(final_content) > max_len:
+      final_content = final_content[:max_len] + "..."
+      is_truncated = True
     await self._log({
         "event_type": "LLM_REQUEST",
         "agent": callback_context.agent_name,
@@ -634,15 +842,26 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "invocation_id": callback_context.invocation_id,
         "user_id": callback_context.session.user_id,
         "content": final_content,
+        "is_truncated": is_truncated,
     })
 
   async def after_model_callback(
       self, *, callback_context: CallbackContext, llm_response: LlmResponse
   ) -> None:
-    """Callback after LLM call."""
+    """Callback after LLM call.
+
+    Logs the LLM response details including:
+    1. Tool calls (if any)
+    2. Text response (if no tool calls)
+    3. Token usage statistics (prompt, candidates, total)
+
+    The content is formatted as a single string with fields separated by ' | '.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
     content_parts = []
     content = llm_response.content
     is_tool_call = False
+    is_truncated = False
     if content and content.parts:
       is_tool_call = any(part.function_call for part in content.parts)
 
@@ -656,8 +875,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         ]
       content_parts.append(f"Tool Name: {', '.join(fc_names)}")
     else:
-      text_content = self._format_content_safely(llm_response.content)
+      text_content, truncated = self._format_content_safely(
+          llm_response.content
+      )
       content_parts.append(f"Tool Name: text_response, {text_content}")
+      if truncated:
+        is_truncated = True
 
     if llm_response.usage_metadata:
       prompt_tokens = getattr(
@@ -684,6 +907,7 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
         "user_id": callback_context.session.user_id,
         "content": final_content,
         "error_message": llm_response.error_message,
+        "is_truncated": is_truncated,
     })
 
   async def before_tool_callback(
@@ -693,17 +917,35 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool_args: dict[str, Any],
       tool_context: ToolContext,
   ) -> None:
-    """Callback before tool call."""
+    """Callback before tool call.
+
+    Logs the tool execution start details including:
+    1. Tool name
+    2. Tool description
+    3. Tool arguments
+
+    The content is formatted as 'Tool Name: ..., Description: ..., Arguments:
+    ...'.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
+    args_str, truncated = _format_args(
+        tool_args, max_len=self._config.max_content_length
+    )
+    content = (
+        f"Tool Name: {tool.name}, Description: {tool.description},"
+        f" Arguments: {args_str}"
+    )
+    if len(content) > self._config.max_content_length:
+      content = content[: self._config.max_content_length] + "..."
+      truncated = True
     await self._log({
         "event_type": "TOOL_STARTING",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": (
-            f"Tool Name: {tool.name}, Description: {tool.description},"
-            f" Arguments: {_format_args(tool_args)}"
-        ),
+        "content": content,
+        "is_truncated": truncated,
     })
 
   async def after_tool_callback(
@@ -714,14 +956,30 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool_context: ToolContext,
       result: dict[str, Any],
   ) -> None:
-    """Callback after tool call."""
+    """Callback after tool call.
+
+    Logs the tool execution result details including:
+    1. Tool name
+    2. Tool result
+
+    The content is formatted as 'Tool Name: ..., Result: ...'.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
+    result_str, truncated = _format_args(
+        result, max_len=self._config.max_content_length
+    )
+    content = f"Tool Name: {tool.name}, Result: {result_str}"
+    if len(content) > self._config.max_content_length:
+      content = content[: self._config.max_content_length] + "..."
+      truncated = True
     await self._log({
         "event_type": "TOOL_COMPLETED",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": f"Tool Name: {tool.name}, Result: {_format_args(result)}",
+        "content": content,
+        "is_truncated": truncated,
     })
 
   async def on_model_error_callback(
@@ -731,7 +989,12 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       llm_request: LlmRequest,
       error: Exception,
   ) -> None:
-    """Callback for LLM errors."""
+    """Callback for model errors.
+
+    Logs errors that occur during LLM calls.
+    No specific content payload is logged, but the error message is captured
+    in the `error_message` field.
+    """
     await self._log({
         "event_type": "LLM_ERROR",
         "agent": callback_context.agent_name,
@@ -749,15 +1012,30 @@ class BigQueryAgentAnalyticsPlugin(BasePlugin):
       tool_context: ToolContext,
       error: Exception,
   ) -> None:
-    """Callback for tool errors."""
+    """Callback for tool errors.
+
+    Logs errors that occur during tool execution.
+    Content includes:
+    1. Tool name
+    2. Tool arguments
+
+    The error message is captured in the `error_message` field.
+    If the content length exceeds `max_content_length`, it is truncated.
+    """
+    args_str, truncated = _format_args(
+        tool_args, max_len=self._config.max_content_length
+    )
+    content = f"Tool Name: {tool.name}, Arguments: {args_str}"
+    if len(content) > self._config.max_content_length:
+      content = content[: self._config.max_content_length] + "..."
+      truncated = True
     await self._log({
         "event_type": "TOOL_ERROR",
         "agent": tool_context.agent_name,
         "session_id": tool_context.session.id,
         "invocation_id": tool_context.invocation_id,
         "user_id": tool_context.session.user_id,
-        "content": (
-            f"Tool Name: {tool.name}, Arguments: {_format_args(tool_args)}"
-        ),
+        "content": content,
         "error_message": str(error),
+        "is_truncated": truncated,
     })
