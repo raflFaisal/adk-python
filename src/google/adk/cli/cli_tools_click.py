@@ -110,6 +110,18 @@ class HelpfulCommand(click.Command):
 logger = logging.getLogger("google_adk." + __name__)
 
 
+_ADK_WEB_WARNING = (
+    "ADK Web is for development purposes. It has access to all data and"
+    " should not be used in production."
+)
+
+
+def _warn_if_with_ui(with_ui: bool) -> None:
+  """Warn when deploying with the developer UI enabled."""
+  if with_ui:
+    click.secho(f"WARNING: {_ADK_WEB_WARNING}", fg="yellow", err=True)
+
+
 @click.group(context_settings={"max_content_width": 240})
 @click.version_option(version.__version__)
 def main():
@@ -741,7 +753,7 @@ def cli_eval(
     from ..evaluation.local_eval_set_results_manager import LocalEvalSetResultsManager
     from ..evaluation.local_eval_sets_manager import load_eval_set_from_file
     from ..evaluation.local_eval_sets_manager import LocalEvalSetsManager
-    from ..evaluation.user_simulator_provider import UserSimulatorProvider
+    from ..evaluation.simulation.user_simulator_provider import UserSimulatorProvider
     from .cli_eval import _collect_eval_results
     from .cli_eval import _collect_inferences
     from .cli_eval import get_root_agent
@@ -1135,7 +1147,7 @@ def fast_api_common_options():
         show_default=True,
         default=False,
         help=(
-            "EXPERIMENTAL Optional. Whether to write OTel data to Google Cloud"
+            "Optional. Whether to write OTel data to Google Cloud"
             " Observability services - Cloud Trace and Cloud Logging."
         ),
     )
@@ -1457,6 +1469,8 @@ def cli_deploy_to_cloud_run(
         fg="yellow",
         err=True,
     )
+
+  _warn_if_with_ui(with_ui)
 
   session_service_uri = session_service_uri or session_db_url
   artifact_service_uri = artifact_service_uri or artifact_storage_uri
@@ -1906,6 +1920,7 @@ def cli_deploy_gke(
       --cluster_name=[cluster_name] path/to/my_agent
   """
   try:
+    _warn_if_with_ui(with_ui)
     cli_deploy.to_gke(
         agent_folder=agent,
         project=project,
